@@ -3,6 +3,7 @@ package parallax
 import (
 	"fmt"
 	"log"
+	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 )
@@ -13,31 +14,41 @@ type AlgoPostProcess[AlgoResult any, PostProcessResult any] func(algoResult Algo
 
 type RequestHandler[PreProcessResult any, AlgoResult any, PostProcessResult any] struct {
 	algoPreProcess  AlgoPreProcess[[]byte, PreProcessResult]
-	algoProcess     AlgoProcess[PreProcessResult, AlgoResult]
 	algoPostProcess AlgoPostProcess[AlgoResult, PostProcessResult]
 
-	algoQueue    chan PreProcessResult
-	resultsQueue chan AlgoResult
+	streamer *Streamer[PreProcessResult, AlgoResult]
+}
 
-	nWorkers int
+func getEnvIntOrPanic(key string, fallback string) int {
+	n, err := getEnvInt(key, fallback)
+	if err != nil {
+		log.Panic(err)
+	}
+	return n
+}
+
+func getEnvFloatOrPanic(key string, fallback string) float64 {
+	f, err := getEnvFloat(key, fallback)
+	if err != nil {
+		log.Panic(err)
+	}
+	return f
 }
 
 func NewRequestHandler[U any, V any, W any](
 	algoPreProcess AlgoPreProcess[[]byte, U],
-	algoProcess AlgoProcess[U, V],
+	algoProcess AlgoProcess[[]U, []V],
 	algoPostProcess AlgoPostProcess[V, W],
 ) RequestHandler[U, V, W] {
-	nWorkers, err := getEnvInt("WORKERS", "1")
-	if err != nil {
-		log.Panic(err)
-	}
+	nWorkers := getEnvIntOrPanic("WORKERS", "1")
+	batchSize := getEnvIntOrPanic("BATCH_SIZE", "1")
+	batchTimeoutSecs := getEnvFloatOrPanic("BATCH_TIMEOUT", "1")
+	batchTimeout := time.Duration(batchTimeoutSecs*1000) * time.Millisecond
+	streamer := newStreamer[U, V](algoProcess, nWorkers, batchSize, batchTimeout)
 	return RequestHandler[U, V, W]{
 		algoPreProcess,
-		algoProcess,
 		algoPostProcess,
-		make(chan U),
-		make(chan V),
-		nWorkers,
+		streamer,
 	}
 }
 
@@ -91,29 +102,15 @@ func (r *RequestHandler[U, V, W]) consume(c *RabbitConnectionParams) {
 
 func (r *RequestHandler[U, V, W]) consumeMessage(qc *RabbitQueueConn, d *amqp.Delivery) {
 	pre := r.algoPreProcess(d.Body)
-	r.algoQueue <- pre
-	algoRes := <-r.resultsQueue
+	algoRes := r.streamer.callAlgoProcess(pre)
 	r.algoPostProcess(algoRes)
 	qc.ch.Ack(d.DeliveryTag, false)
 }
 
-func (r *RequestHandler[U, V, W]) worker() {
-	for {
-		pre := <-r.algoQueue
-		algoRes := r.algoProcess(pre)
-		r.resultsQueue <- algoRes
-	}
-}
-
-func (r *RequestHandler[U, V, W]) startWorkers() {
-	for range r.nWorkers {
-		go r.worker()
-	}
-}
-
 func (r *RequestHandler[U, V, W]) StartConsuming() {
 	c := rabbitParamsFromEnv()
-	r.startWorkers()
+	r.streamer.startWorkers()
+	r.streamer.start()
 	// qc := connectToQueue(c)
 	r.consume(c)
 }

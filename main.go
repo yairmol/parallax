@@ -70,9 +70,13 @@ func algoPreProcess(bytes []byte) PreResult {
 	return PreResult(bytes)
 }
 
-func algoProcess(pre PreResult) AlgoResult {
+func algoProcess(pre []PreResult) []AlgoResult {
 	fmt.Printf("In algo with %v\n", pre)
-	return AlgoResult(pre)
+	res := []AlgoResult{}
+	for _, x := range pre {
+		res = append(res, AlgoResult(x))
+	}
+	return res
 }
 
 func algoPostProcess(pre AlgoResult) PostResult {

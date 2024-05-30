@@ -20,3 +20,12 @@ func getEnvInt(key string, fallback string) (int, error) {
 	}
 	return v, nil
 }
+
+func getEnvFloat(key string, fallback string) (float64, error) {
+	s := getEnv(key, fallback)
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, err
+	}
+	return v, nil
+}
