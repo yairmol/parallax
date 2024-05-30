@@ -93,17 +93,28 @@ func (s *Streamer[T, U]) start() {
 
 func (s *Streamer[T, U]) stream() {
 	batch := []Pair[int, T]{}
-	// batchStart := time.Now()
+	batchStart := time.Now()
 	for {
-		nextInp := <-s.inChannel
-		// if len(batch) == 0 {
-		// 	batchStart := time.Now()
-		// }
-		batch = append(batch, nextInp)
-		if len(batch) == s.batchSize {
-			fmt.Printf("sending batch with %v items\n", len(batch))
-			s.batchesChannel <- batch
-			batch = batch[:0]
+		timePassed := time.Now().UnixMilli() - batchStart.UnixMilli()
+		timeout := s.batchTimeout - time.Duration(timePassed)*time.Millisecond
+		select {
+		case nextInp := <-s.inChannel:
+			if len(batch) == 0 {
+				batchStart = time.Now()
+			}
+			batch = append(batch, nextInp)
+			if len(batch) == s.batchSize {
+				fmt.Printf("sending batch with %v items\n", len(batch))
+				s.batchesChannel <- batch
+				batch = batch[:0]
+			}
+		case <-time.After(timeout):
+			if len(batch) > 0 {
+				fmt.Printf("sending batch with %v items\n", len(batch))
+				s.batchesChannel <- batch
+				batch = batch[:0]
+			}
+			batchStart = time.Now()
 		}
 	}
 }
