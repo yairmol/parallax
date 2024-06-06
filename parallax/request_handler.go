@@ -109,7 +109,9 @@ func (r *RequestHandler[U, V, W]) consumeMessage(qc *RabbitQueueConn, d *amqp.De
 
 func (r *RequestHandler[U, V, W]) StartConsuming() {
 	c := rabbitParamsFromEnv()
+	fmt.Println("starting workers")
 	r.streamer.startWorkers()
+	fmt.Println("starting streamer")
 	r.streamer.start()
 	// qc := connectToQueue(c)
 	r.consume(c)

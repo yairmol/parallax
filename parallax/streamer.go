@@ -1,7 +1,6 @@
 package parallax
 
 import (
-	"fmt"
 	"sync"
 	"time"
 )
@@ -23,6 +22,7 @@ type Streamer[T any, U any] struct {
 	batchTimeout time.Duration
 	// batchLatency time.Duration
 
+	mapMutex     sync.Mutex
 	indexMutex   sync.Mutex
 	currentIndex int
 }
@@ -52,21 +52,38 @@ func (s *Streamer[T, U]) nextIndex() int {
 	return s.currentIndex
 }
 
+func (s *Streamer[T, U]) setOutputChannel(i int, outChan chan U) {
+	s.mapMutex.Lock()
+	defer s.mapMutex.Unlock()
+	s.outChannels[i] = outChan
+}
+
+func (s *Streamer[T, U]) removeOutputChannel(i int) {
+	s.mapMutex.Lock()
+	defer s.mapMutex.Unlock()
+	delete(s.outChannels, i)
+}
+
 func (s *Streamer[T, U]) callAlgoProcess(m T) U {
 	i := s.nextIndex()
 	outChan := make(chan U)
-	s.outChannels[i] = outChan
+	s.setOutputChannel(i, outChan)
 	p := Pair[int, T]{i, m}
 	s.inChannel <- p
 	res := <-outChan
+	s.removeOutputChannel(i)
 	return res
 }
 
+func (s *Streamer[T, U]) getOutputChannel(i int) chan U {
+	s.mapMutex.Lock()
+	defer s.mapMutex.Unlock()
+	return s.outChannels[i]
+}
+
 func (s *Streamer[T, U]) worker(workerId int) {
-	fmt.Printf("starting worker %v\n", workerId)
 	for {
 		batchPairs := <-s.batchesChannel
-		fmt.Printf("received batch %v\n", batchPairs)
 		batch := []T{}
 		batchIndices := []int{}
 		for _, p := range batchPairs {
@@ -75,8 +92,9 @@ func (s *Streamer[T, U]) worker(workerId int) {
 		}
 		batchRes := s.algoProcess(batch)
 		for i, ind := range batchIndices {
-			s.outChannels[ind] <- batchRes[i]
-			close(s.outChannels[ind])
+			outChan := s.getOutputChannel(ind)
+			outChan <- batchRes[i]
+			close(outChan)
 		}
 	}
 }
@@ -92,7 +110,7 @@ func (s *Streamer[T, U]) start() {
 }
 
 func (s *Streamer[T, U]) stream() {
-	batch := []Pair[int, T]{}
+	batch := make([]Pair[int, T], 0)
 	batchStart := time.Now()
 	for {
 		timePassed := time.Since(batchStart)
@@ -104,13 +122,11 @@ func (s *Streamer[T, U]) stream() {
 			}
 			batch = append(batch, nextInp)
 			if len(batch) == s.batchSize {
-				fmt.Printf("sending batch with %v items\n", len(batch))
 				s.batchesChannel <- batch
-				batch = batch[:0]
+				batch = make([]Pair[int, T], 0)
 			}
 		case <-time.After(timeout):
 			if len(batch) > 0 {
-				fmt.Printf("sending batch with %v items\n", len(batch))
 				s.batchesChannel <- batch
 				batch = batch[:0]
 			}
