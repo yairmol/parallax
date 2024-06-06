@@ -95,8 +95,8 @@ func (s *Streamer[T, U]) stream() {
 	batch := []Pair[int, T]{}
 	batchStart := time.Now()
 	for {
-		timePassed := time.Now().UnixMilli() - batchStart.UnixMilli()
-		timeout := s.batchTimeout - time.Duration(timePassed)*time.Millisecond
+		timePassed := time.Since(batchStart)
+		timeout := s.batchTimeout - timePassed
 		select {
 		case nextInp := <-s.inChannel:
 			if len(batch) == 0 {
