@@ -10,12 +10,17 @@ type Pair[T any, U any] struct {
 	second U
 }
 
+type Optional[T any] struct {
+	V   T
+	Err error
+}
+
 type Streamer[T any, U any] struct {
 	inChannel      chan Pair[int, T]
 	batchesChannel chan []Pair[int, T]
-	outChannels    map[int]chan U
+	outChannels    map[int]chan Optional[U]
 
-	algoProcess AlgoProcess[[]T, []U]
+	algoProcess AlgoProcess[[]T, []Optional[U]]
 
 	nWorkers     int
 	batchSize    int
@@ -28,14 +33,14 @@ type Streamer[T any, U any] struct {
 }
 
 func newStreamer[T, U any](
-	algoProcess AlgoProcess[[]T, []U],
+	algoProcess AlgoProcess[[]T, []Optional[U]],
 	nWorkers int,
 	batchSize int,
 	batchTimeout time.Duration,
 ) *Streamer[T, U] {
 	return &Streamer[T, U]{
 		inChannel:      make(chan Pair[int, T]),
-		outChannels:    make(map[int]chan U),
+		outChannels:    make(map[int]chan Optional[U]),
 		batchesChannel: make(chan []Pair[int, T]),
 		algoProcess:    algoProcess,
 		nWorkers:       nWorkers,
@@ -52,7 +57,7 @@ func (s *Streamer[T, U]) nextIndex() int {
 	return s.currentIndex
 }
 
-func (s *Streamer[T, U]) setOutputChannel(i int, outChan chan U) {
+func (s *Streamer[T, U]) setOutputChannel(i int, outChan chan Optional[U]) {
 	s.mapMutex.Lock()
 	defer s.mapMutex.Unlock()
 	s.outChannels[i] = outChan
@@ -66,22 +71,22 @@ func (s *Streamer[T, U]) removeOutputChannel(i int) {
 
 func (s *Streamer[T, U]) callAlgoProcess(m T) (U, error) {
 	i := s.nextIndex()
-	outChan := make(chan U)
+	outChan := make(chan Optional[U])
 	s.setOutputChannel(i, outChan)
 	p := Pair[int, T]{i, m}
 	s.inChannel <- p
 	res := <-outChan
 	s.removeOutputChannel(i)
-	return res, nil
+	return res.V, res.Err
 }
 
-func (s *Streamer[T, U]) getOutputChannel(i int) chan U {
+func (s *Streamer[T, U]) getOutputChannel(i int) chan Optional[U] {
 	s.mapMutex.Lock()
 	defer s.mapMutex.Unlock()
 	return s.outChannels[i]
 }
 
-func (s *Streamer[T, U]) worker(workerId int) {
+func (s *Streamer[T, U]) worker(_ int) {
 	for {
 		batchPairs := <-s.batchesChannel
 		batch := []T{}
@@ -90,10 +95,7 @@ func (s *Streamer[T, U]) worker(workerId int) {
 			batchIndices = append(batchIndices, p.first)
 			batch = append(batch, p.second)
 		}
-		batchRes, err := s.algoProcess(batch)
-		if err != nil {
-			continue
-		}
+		batchRes := s.algoProcess(batch)
 		for i, ind := range batchIndices {
 			outChan := s.getOutputChannel(ind)
 			outChan <- batchRes[i]

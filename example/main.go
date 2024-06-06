@@ -16,14 +16,20 @@ func algoPreProcess(bytes []byte) (PreResult, error) {
 	return PreResult(bytes), nil
 }
 
-func algoProcess(pre []PreResult) ([]AlgoResult, error) {
+func algoProcess(pre []PreResult) []parallax.Optional[AlgoResult] {
 	fmt.Printf("In algo with %v\n", pre)
-	res := []AlgoResult{}
+	res := []parallax.Optional[AlgoResult]{}
 	for _, x := range pre {
-		res = append(res, AlgoResult(x))
+		var opt parallax.Optional[AlgoResult]
+		if x == PreResult("Hey") {
+			opt = parallax.Optional[AlgoResult]{Err: fmt.Errorf("hey :(")}
+		} else {
+			opt = parallax.Optional[AlgoResult]{V: AlgoResult(x), Err: nil}
+		}
+		res = append(res, opt)
 	}
 	time.Sleep(100 * time.Millisecond)
-	return res, nil
+	return res
 }
 
 func algoPostProcess(algoRes AlgoResult) ([]byte, error) {

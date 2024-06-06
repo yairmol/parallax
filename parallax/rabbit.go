@@ -98,7 +98,7 @@ func (client *RabbitClient) Publish(body []byte, queue string) error {
 	if err != nil {
 		return fmt.Errorf("failed to publish a message: %w", err)
 	}
-	fmt.Println(" [x] Sent", body)
+	fmt.Println(" [x] Sent", body, "to", queue)
 	return nil
 }
 
