@@ -1,6 +1,7 @@
 package parallax
 
 import (
+	"log"
 	"os"
 	"strconv"
 )
@@ -28,4 +29,20 @@ func getEnvFloat(key string, fallback string) (float64, error) {
 		return 0, err
 	}
 	return v, nil
+}
+
+func getEnvIntOrPanic(key string, fallback string) int {
+	n, err := getEnvInt(key, fallback)
+	if err != nil {
+		log.Panic(err)
+	}
+	return n
+}
+
+func getEnvFloatOrPanic(key string, fallback string) float64 {
+	f, err := getEnvFloat(key, fallback)
+	if err != nil {
+		log.Panic(err)
+	}
+	return f
 }

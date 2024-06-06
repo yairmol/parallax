@@ -64,7 +64,7 @@ func (s *Streamer[T, U]) removeOutputChannel(i int) {
 	delete(s.outChannels, i)
 }
 
-func (s *Streamer[T, U]) callAlgoProcess(m T) U {
+func (s *Streamer[T, U]) callAlgoProcess(m T) (U, error) {
 	i := s.nextIndex()
 	outChan := make(chan U)
 	s.setOutputChannel(i, outChan)
@@ -72,7 +72,7 @@ func (s *Streamer[T, U]) callAlgoProcess(m T) U {
 	s.inChannel <- p
 	res := <-outChan
 	s.removeOutputChannel(i)
-	return res
+	return res, nil
 }
 
 func (s *Streamer[T, U]) getOutputChannel(i int) chan U {
@@ -90,7 +90,10 @@ func (s *Streamer[T, U]) worker(workerId int) {
 			batchIndices = append(batchIndices, p.first)
 			batch = append(batch, p.second)
 		}
-		batchRes := s.algoProcess(batch)
+		batchRes, err := s.algoProcess(batch)
+		if err != nil {
+			continue
+		}
 		for i, ind := range batchIndices {
 			outChan := s.getOutputChannel(ind)
 			outChan <- batchRes[i]

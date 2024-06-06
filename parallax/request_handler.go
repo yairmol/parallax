@@ -8,91 +8,65 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-type AlgoPreProcess[Request any, PreProcessResult any] func(request Request) PreProcessResult
-type AlgoProcess[PreProcessResult any, AlgoResult any] func(preProcessResult PreProcessResult) AlgoResult
-type AlgoPostProcess[AlgoResult any, PostProcessResult any] func(algoResult AlgoResult) PostProcessResult
+type AlgoPreProcess[T any, U any] func(request T) (U, error)
+type AlgoProcess[U any, V any] func(preProcessResult U) (V, error)
+type AlgoPostProcess[V any, W any] func(algoResult V) (W, error)
 
-type RequestHandler[PreProcessResult any, AlgoResult any, PostProcessResult any] struct {
+type RequestHandler[PreProcessResult any, AlgoResult any] struct {
 	algoPreProcess  AlgoPreProcess[[]byte, PreProcessResult]
-	algoPostProcess AlgoPostProcess[AlgoResult, PostProcessResult]
+	algoPostProcess AlgoPostProcess[AlgoResult, []byte]
 
-	streamer *Streamer[PreProcessResult, AlgoResult]
+	streamer     *Streamer[PreProcessResult, AlgoResult]
+	rabbitClient *RabbitClient
+
+	consumeQueue string
+	publishQueue string
 }
 
-func getEnvIntOrPanic(key string, fallback string) int {
-	n, err := getEnvInt(key, fallback)
-	if err != nil {
-		log.Panic(err)
-	}
-	return n
-}
-
-func getEnvFloatOrPanic(key string, fallback string) float64 {
-	f, err := getEnvFloat(key, fallback)
-	if err != nil {
-		log.Panic(err)
-	}
-	return f
-}
-
-func NewRequestHandler[U any, V any, W any](
+func NewRequestHandler[U any, V any](
 	algoPreProcess AlgoPreProcess[[]byte, U],
 	algoProcess AlgoProcess[[]U, []V],
-	algoPostProcess AlgoPostProcess[V, W],
-) RequestHandler[U, V, W] {
+	algoPostProcess AlgoPostProcess[V, []byte],
+) RequestHandler[U, V] {
 	nWorkers := getEnvIntOrPanic("WORKERS", "1")
 	batchSize := getEnvIntOrPanic("BATCH_SIZE", "1")
 	batchTimeoutSecs := getEnvFloatOrPanic("BATCH_TIMEOUT", "1")
 	batchTimeout := time.Duration(batchTimeoutSecs*1000) * time.Millisecond
 	streamer := newStreamer[U, V](algoProcess, nWorkers, batchSize, batchTimeout)
-	return RequestHandler[U, V, W]{
+	rabbitClient := NewRabbitClient()
+	consumeQueue := getEnv("CONSUME_QUEUE", "input")
+	publishQueue := getEnv("PUBLISH_QUEUE", "output")
+
+	return RequestHandler[U, V]{
 		algoPreProcess,
 		algoPostProcess,
 		streamer,
+		rabbitClient,
+		consumeQueue,
+		publishQueue,
 	}
 }
 
-func (r *RequestHandler[U, V, W]) consume(c *RabbitConnectionParams) {
+func (r *RequestHandler[U, V]) consume(c *RabbitConnectionParams) {
 	connStr := c.formatConnectionString()
 	fmt.Println(connStr)
-	conn, err := amqp.Dial(connStr)
-	failOnError(err, "Failed to connect to RabbitMQ")
-	defer conn.Close()
+	err := r.rabbitClient.Connect(connStr, 5)
+	failOnError(err, "")
+	defer r.rabbitClient.Close()
 
-	ch, err := conn.Channel()
-	failOnError(err, "Failed to open a channel")
-	defer ch.Close()
-
-	ch.Qos(5, 0, false)
-	q, err := ch.QueueDeclare(
-		"hello", // name
-		false,   // durable
-		false,   // delete when unused
-		false,   // exclusive
-		false,   // no-wait
-		nil,     // arguments
-	)
-	failOnError(err, "Failed to declare a queue")
-	qc := &RabbitQueueConn{conn, ch, &q}
+	r.rabbitClient.DeclareQueue("hello")
+	failOnError(err, "")
 
 	fmt.Println("starting to consume")
-	msgs, err := qc.ch.Consume(
-		qc.q.Name, // queue
-		"",        // consumer
-		false,     // auto-ack
-		false,     // exclusive
-		false,     // no-local
-		false,     // no-wait
-		nil,       // args
-	)
-	failOnError(err, "Failed to register a consumer")
+	msgs, err := r.rabbitClient.Consume()
+	failOnError(err, "")
 
 	var forever chan struct{}
 
 	go func() {
 		for d := range msgs {
 			log.Printf("Received a message: %s", d.Body)
-			go r.consumeMessage(qc, &d)
+			go r.consumeMessage(&d)
 		}
 	}()
 
@@ -100,19 +74,26 @@ func (r *RequestHandler[U, V, W]) consume(c *RabbitConnectionParams) {
 	<-forever
 }
 
-func (r *RequestHandler[U, V, W]) consumeMessage(qc *RabbitQueueConn, d *amqp.Delivery) {
-	pre := r.algoPreProcess(d.Body)
-	algoRes := r.streamer.callAlgoProcess(pre)
-	r.algoPostProcess(algoRes)
-	qc.ch.Ack(d.DeliveryTag, false)
+func (r *RequestHandler[U, V]) consumeMessage(d *amqp.Delivery) {
+	pre, err := r.algoPreProcess(d.Body)
+	if err != nil {
+		return
+	}
+	algoRes, err := r.streamer.callAlgoProcess(pre)
+	if err != nil {
+		return
+	}
+	response, err := r.algoPostProcess(algoRes)
+	if err != nil {
+		return
+	}
+	r.rabbitClient.Publish(response, "output")
+	r.rabbitClient.ch.Ack(d.DeliveryTag, false)
 }
 
-func (r *RequestHandler[U, V, W]) StartConsuming() {
+func (r *RequestHandler[U, V]) StartConsuming() {
 	c := rabbitParamsFromEnv()
-	fmt.Println("starting workers")
 	r.streamer.startWorkers()
-	fmt.Println("starting streamer")
 	r.streamer.start()
-	// qc := connectToQueue(c)
 	r.consume(c)
 }
