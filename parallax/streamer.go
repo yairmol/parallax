@@ -35,18 +35,16 @@ type Streamer[T any, U any] struct {
 
 func newStreamer[T, U any](
 	algoProcess AlgoProcess[[]T, []Optional[U]],
-	nWorkers int,
-	batchSize int,
-	batchTimeout time.Duration,
+	config *StreamerConfig,
 ) *Streamer[T, U] {
 	return &Streamer[T, U]{
 		inChannel:      make(chan Pair[int, T]),
 		outChannels:    make(map[int]chan Optional[U]),
 		batchesChannel: make(chan []Pair[int, T]),
 		algoProcess:    algoProcess,
-		nWorkers:       nWorkers,
-		batchSize:      batchSize,
-		batchTimeout:   batchTimeout,
+		nWorkers:       config.nWorkers,
+		batchSize:      config.batchSize,
+		batchTimeout:   config.batchTimeout,
 	}
 
 }

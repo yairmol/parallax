@@ -40,7 +40,9 @@ func algoPostProcess(algoRes AlgoResult) ([]byte, error) {
 }
 
 func main() {
+	config := parallax.ConfigFromEnv()
 	r := parallax.NewRequestHandler(
+		config,
 		algoPreProcess,
 		algoProcess,
 		algoPostProcess,

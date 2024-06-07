@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -22,34 +21,25 @@ type RequestHandler[PreProcessResult any, AlgoResult any] struct {
 	streamer     *Streamer[PreProcessResult, AlgoResult]
 	rabbitClient *RabbitClient
 
-	consumeQueue string
-	publishQueue string
-	errorQueue   string
+	config *ParallaxConfig
 }
 
 func NewRequestHandler[U any, V any](
+	config *ParallaxConfig,
 	algoPreProcess AlgoPreProcess[[]byte, U],
 	algoProcess AlgoProcess[[]U, []Optional[V]],
 	algoPostProcess AlgoPostProcess[V, []byte],
 ) RequestHandler[U, V] {
-	nWorkers := getEnvIntOrPanic("WORKERS", "1")
-	batchSize := getEnvIntOrPanic("BATCH_SIZE", "1")
-	batchTimeoutSecs := getEnvFloatOrPanic("BATCH_TIMEOUT", "1")
-	batchTimeout := time.Duration(batchTimeoutSecs*1000) * time.Millisecond
-	streamer := newStreamer[U, V](algoProcess, nWorkers, batchSize, batchTimeout)
+	streamerConfig := config.GetStreamerConfig()
+	streamer := newStreamer(algoProcess, streamerConfig)
 	rabbitClient := NewRabbitClient()
-	consumeQueue := getEnv("CONSUME_QUEUE", "input")
-	publishQueue := getEnv("PUBLISH_QUEUE", "output")
-	errorQueue := getEnv("ERROR_QUEUE", "")
 
 	return RequestHandler[U, V]{
 		algoPreProcess,
 		algoPostProcess,
 		streamer,
 		rabbitClient,
-		consumeQueue,
-		publishQueue,
-		errorQueue,
+		config,
 	}
 }
 
@@ -59,7 +49,7 @@ func (r *RequestHandler[U, V]) consume(c *RabbitConnectionParams) {
 	failOnError(err, "")
 	defer r.rabbitClient.Close()
 
-	r.rabbitClient.DeclareQueue("hello")
+	r.rabbitClient.DeclareQueue(r.config.consumeQueue)
 	failOnError(err, "")
 
 	fmt.Println("starting to consume")
@@ -80,10 +70,10 @@ func (r *RequestHandler[U, V]) consume(c *RabbitConnectionParams) {
 }
 
 func (r *RequestHandler[U, V]) publishError(err error) {
-	if r.errorQueue == "" {
+	if r.config.errorQueue == "" {
 		return
 	}
-	r.rabbitClient.Publish([]byte(fmt.Sprintf("%v", err)), r.errorQueue)
+	r.rabbitClient.Publish([]byte(fmt.Sprintf("%v", err)), r.config.errorQueue)
 }
 
 func (r *RequestHandler[U, V]) processMessage(body []byte) ([]byte, error) {
@@ -104,7 +94,7 @@ func (r *RequestHandler[U, V]) consumeMessage(d *amqp.Delivery) {
 	if err != nil {
 		r.publishError(err)
 	} else {
-		r.rabbitClient.Publish(response, "output")
+		r.rabbitClient.Publish(response, r.config.publishQueue)
 	}
 }
 
@@ -123,14 +113,15 @@ func (r *RequestHandler[U, V]) serveOnRest() {
 			c.Data(http.StatusOK, "text/plain", response)
 		}
 	})
-	router.Run("localhost:8080")
+	addr := fmt.Sprintf("%v:%v", r.config.host, r.config.port)
+	router.Run(addr)
 }
 
 func (r *RequestHandler[U, V]) StartConsuming(serveHttp bool) {
 	c := rabbitParamsFromEnv()
 	r.streamer.startWorkers()
 	r.streamer.start()
-	if serveHttp {
+	if r.config.serveHttp {
 		go r.serveOnRest()
 	}
 	r.consume(c)
