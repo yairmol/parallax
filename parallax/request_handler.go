@@ -1,10 +1,13 @@
 package parallax
 
 import (
+	"bytes"
 	"fmt"
 	"log"
+	"net/http"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
@@ -52,7 +55,6 @@ func NewRequestHandler[U any, V any](
 
 func (r *RequestHandler[U, V]) consume(c *RabbitConnectionParams) {
 	connStr := c.formatConnectionString()
-	fmt.Println(connStr)
 	err := r.rabbitClient.Connect(connStr, 5)
 	failOnError(err, "")
 	defer r.rabbitClient.Close()
@@ -84,29 +86,52 @@ func (r *RequestHandler[U, V]) publishError(err error) {
 	r.rabbitClient.Publish([]byte(fmt.Sprintf("%v", err)), r.errorQueue)
 }
 
-func (r *RequestHandler[U, V]) consumeMessage(d *amqp.Delivery) {
-	defer r.rabbitClient.ch.Ack(d.DeliveryTag, false)
-	pre, err := r.algoPreProcess(d.Body)
+func (r *RequestHandler[U, V]) processMessage(body []byte) ([]byte, error) {
+	pre, err := r.algoPreProcess(body)
 	if err != nil {
-		r.publishError(err)
-		return
+		return nil, err
 	}
 	algoRes, err := r.streamer.callAlgoProcess(pre)
 	if err != nil {
-		r.publishError(err)
-		return
+		return nil, err
 	}
-	response, err := r.algoPostProcess(algoRes)
-	if err != nil {
-		r.publishError(err)
-		return
-	}
-	r.rabbitClient.Publish(response, "output")
+	return r.algoPostProcess(algoRes)
 }
 
-func (r *RequestHandler[U, V]) StartConsuming() {
+func (r *RequestHandler[U, V]) consumeMessage(d *amqp.Delivery) {
+	defer r.rabbitClient.ch.Ack(d.DeliveryTag, false)
+	response, err := r.processMessage(d.Body)
+	if err != nil {
+		r.publishError(err)
+	} else {
+		r.rabbitClient.Publish(response, "output")
+	}
+}
+
+func (r *RequestHandler[U, V]) serveOnRest() {
+	router := gin.Default()
+	router.POST("/run", func(c *gin.Context) {
+
+		buf := new(bytes.Buffer)
+		buf.ReadFrom(c.Request.Body)
+		request := buf.String()
+		response, err := r.processMessage([]byte(request))
+		if err != nil {
+			errMsg := gin.H{"message": fmt.Sprintf("%v", err)}
+			c.JSON(http.StatusInternalServerError, errMsg)
+		} else {
+			c.Data(http.StatusOK, "text/plain", response)
+		}
+	})
+	router.Run("localhost:8080")
+}
+
+func (r *RequestHandler[U, V]) StartConsuming(serveHttp bool) {
 	c := rabbitParamsFromEnv()
 	r.streamer.startWorkers()
 	r.streamer.start()
+	if serveHttp {
+		go r.serveOnRest()
+	}
 	r.consume(c)
 }

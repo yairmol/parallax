@@ -45,5 +45,5 @@ func main() {
 		algoProcess,
 		algoPostProcess,
 	)
-	r.StartConsuming()
+	r.StartConsuming(true)
 }

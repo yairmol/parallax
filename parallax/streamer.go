@@ -1,6 +1,7 @@
 package parallax
 
 import (
+	"fmt"
 	"sync"
 	"time"
 )
@@ -86,7 +87,8 @@ func (s *Streamer[T, U]) getOutputChannel(i int) chan Optional[U] {
 	return s.outChannels[i]
 }
 
-func (s *Streamer[T, U]) worker(_ int) {
+func (s *Streamer[T, U]) worker(workerId int) {
+	fmt.Printf("worker %v is up\n", workerId)
 	for {
 		batchPairs := <-s.batchesChannel
 		batch := []T{}
@@ -135,7 +137,6 @@ func (s *Streamer[T, U]) stream() {
 				s.batchesChannel <- batch
 				batch = batch[:0]
 			}
-			batchStart = time.Now()
 		}
 	}
 }
